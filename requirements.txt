@@ -1,0 +1,13 @@
+langchain
+python-dotenv
+langchain_groq 
+langchain-community
+langchain_huggingface 
+rank_bm25
+streamlit 
+fastapi 
+pydantic  
+pypdf
+faiss-cpu 
+python-multipart
+
