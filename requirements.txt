@@ -9,4 +9,5 @@ fastapi
 pydantic  
 pypdf
 faiss-cpu 
+python-multipart
 
