@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main  
+
 jobs:
   test:
     name: Run Tests
@@ -24,13 +25,13 @@ jobs:
 
       - name: Run Backend Tests
         run: |
-          pytest tests/ --maxfail=5 --disable-warnings
+          PYTHONPATH=$(pwd) pytest tests/ --maxfail=5 --disable-warnings
 
       - name: Run FastAPI Server Test
         run: |
-          uvicorn main:app --host 0.0.0.0 --port 3000 &  # Start server in background
+          uvicorn main:app --host 0.0.0.0 --port 3000 &  # Start FastAPI server in background
           sleep 5  # Wait for server to start
-          curl -f http://localhost:3000/docs || exit 1  # Check FastAPI is running
+          curl -f http://localhost:3000/docs || exit 1  # Check if API docs are available
 
   build-and-push:
     name: Build and Push Docker Images
