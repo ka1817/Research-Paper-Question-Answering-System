@@ -1,3 +1,18 @@
 venv/
-.env 
-__pycache__
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.git/
+.gitignore
+
+.dockerignore
+.github/  # Exclude GitHub Actions workflows from the build context
+
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db

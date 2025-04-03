@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: backend
+    ports:
+      - "3000:3000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY} 
+    restart: always
+    networks:
+      - app_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    container_name: frontend
+    ports:
+      - "8500:8500"  
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge

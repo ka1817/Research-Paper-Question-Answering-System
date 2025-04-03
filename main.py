@@ -1,123 +1,90 @@
-import os
-import shutil
-
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from dotenv import load_dotenv  
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from fastapi import FastAPI, File, UploadFile
+from langchain_groq import ChatGroq
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers.ensemble import EnsembleRetriever
-
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationSummaryMemory
+from langchain.vectorstores import FAISS
+from langchain.retrievers import BM25Retriever
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.schema import Document
+from collections import defaultdict
+from sentence_transformers import CrossEncoder
+from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain_groq import ChatGroq
-
-# Load environment variables
+import os
+from dotenv import load_dotenv
+from io import BytesIO
+import uvicorn
+import tempfile
+import string
 load_dotenv()
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 
-if not GROQ_API_KEY:
-    raise ValueError("❌ ERROR: GROQ_API_KEY is missing! Please set it in your .env file.")
+app = FastAPI(title="Research Paper Q & A")
 
-# Initialize FastAPI app
-app = FastAPI()
-
-# Initialize LLM (Groq's Gemma model)
-llm = ChatGroq(api_key=GROQ_API_KEY, model='gemma-9b')
-
-# Initialize memory
-memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
-
-# Prompt Template
-template = """You are an expert in answering questions based on the provided research papers. 
-Use the given context to generate an accurate and concise response.
-
-Context: {context}
-Chat History: {chat_history}
-Question: {question}
-
-Answer:
-"""
-
-prompt = PromptTemplate(
-    input_variables=["chat_history", "context", "question"],
-    template=template
-)
-
-# Global variables
-vectorstore = None
-hybrid_retriever = None
+llm = ChatGroq(api_key=GROQ_API_KEY, model='llama-3.3-70b-versatile')
 
 
-@app.post("/upload/")
-async def upload_research_paper(file: UploadFile = File(...)):
-    """
-    Upload a research paper (PDF), process it, and create a hybrid retriever.
-    """
-    global vectorstore, hybrid_retriever
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-    # Validate file type
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-
-    # Save the uploaded file temporarily
-    file_path = f"uploads/{file.filename}"
-    os.makedirs("uploads", exist_ok=True)
+def reciprocal_rank_fusion(results_list, k=60):
+    scores = defaultdict(float)
+    for results in results_list:
+        for rank, doc in enumerate(results):
+            scores[doc.page_content] += 1 / (rank + k)
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    ranked_docs = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [Document(page_content=doc) for doc in ranked_docs]
 
-    # Load the document
-    loader = PyPDFLoader(file_path)
+
+def process_pdf(pdf_file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+        temp_file.write(pdf_file.read())
+        temp_file_path = temp_file.name
+    
+    loader = PyPDFLoader(temp_file_path)
     documents = loader.load()
+    
+    splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
+    chunks = splitter.split_documents(documents)
+    
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    if not documents:
-        os.remove(file_path)
-        raise HTTPException(status_code=400, detail="Failed to process the document.")
-
-    # Split into chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=100)
-    chunks = text_splitter.split_documents(documents)
-
-    # Create FAISS vector store
-    embeddings = HuggingFaceEmbeddings()
+    
     vectorstore = FAISS.from_documents(chunks, embeddings)
-
-    # Create BM25 retriever
     bm25_retriever = BM25Retriever.from_documents(chunks)
+    
+    return vectorstore, bm25_retriever, chunks
 
-    # Hybrid Retriever (FAISS + BM25)
-    hybrid_retriever = EnsembleRetriever(retrievers=[bm25_retriever, vectorstore.as_retriever()], weights=[0.6, 0.4])
+@app.post("/query_pdf/")
+async def query_pdf(file: UploadFile = File(...), query: str = ""):
+    pdf_content = await file.read()
+    pdf_file = BytesIO(pdf_content)
+    
+    vectorstore, bm25_retriever, chunks = process_pdf(pdf_file)
+    
+    bm25_results = bm25_retriever.get_relevant_documents(query,k=5)
+    faiss_results = vectorstore.as_retriever().get_relevant_documents(query,k=5)
+    
+    final_docs = reciprocal_rank_fusion([bm25_results, faiss_results])
+    
+    
+    context_text = " ".join([doc.page_content for doc in final_docs[:3]])
 
-    return {"message": "✅ Research paper uploaded and indexed successfully."}
-
-
-@app.post("/query/")
-async def ask_question(question: str = Form(...)):
-    """
-    Answer a user's question using the uploaded research paper.
-    """
-    if hybrid_retriever is None:
-        raise HTTPException(status_code=400, detail="No research paper uploaded. Please upload a document first.")
-
-    # Initialize ConversationalRetrievalChain
-    chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=hybrid_retriever,
-        memory=memory,
-        combine_docs_chain_kwargs={"prompt": prompt}
+    
+    qa_prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template="You are an expert in AI. Use the following context to answer the question accurately and concisely. Context: {context} and Question:\n{question}"
     )
 
-    # Get the response
-    response = chain.invoke({"context": "", "question": question, "chat_history": []})
+    qa_chain = qa_prompt | llm
 
-    return {"answer": response.get("answer", "No answer found.")}
+    result = qa_chain.invoke({"context": context_text, "question": query})
 
+    
+    return {"answer": result.content}
 
-# Run FastAPI server (for local execution)
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=3000)
+
