@@ -10,4 +10,5 @@ pydantic
 pypdf
 faiss-cpu 
 python-multipart
-pytest
+pytest 
+uvicorn
