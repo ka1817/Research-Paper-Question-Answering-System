@@ -36,9 +36,17 @@ jobs:
 
       - name: Run FastAPI Server Test
         run: |
-          uvicorn main:app --host 0.0.0.0 --port 3000 &  # Start FastAPI server in background
-          sleep 5  # Wait for server to start
-          curl -f http://localhost:3000/docs || exit 1  # Check if API docs are available
+          uvicorn main:app --host 0.0.0.0 --port 3000 &  # Start FastAPI in the background
+          for i in {1..10}; do
+            if curl -f http://localhost:3000/docs; then
+              echo "✅ FastAPI is up!"
+              exit 0
+            fi
+            echo "⏳ Waiting for FastAPI to start... ($i/10)"
+            sleep 3
+          done
+          echo "❌ FastAPI did not start in time!"
+          exit 1
 
   build-and-push:
     name: Build and Push Docker Images
@@ -55,15 +63,21 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and Push Backend Image
+      - name: Build Backend Image
         run: |
           docker build -t ${{ secrets.DOCKER_USERNAME }}/research-backend:latest -f backend.Dockerfile .
-          docker push ${{ secrets.DOCKER_USERNAME }}/research-backend:latest
+          docker images | grep research-backend
 
-      - name: Build and Push Frontend Image
+      - name: Push Backend Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/research-backend:latest
+
+      - name: Build Frontend Image
         run: |
           docker build -t ${{ secrets.DOCKER_USERNAME }}/research-frontend:latest -f frontend.Dockerfile .
-          docker push ${{ secrets.DOCKER_USERNAME }}/research-frontend:latest
+          docker images | grep research-frontend
+
+      - name: Push Frontend Image
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/research-frontend:latest
 
   deploy:
     name: Deploy on EC2
